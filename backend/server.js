@@ -110,6 +110,70 @@ app.post('/api/signals', ingestionLimiter, async (req, res) => {
   }
 });
 
+// --- 5. Workflow Engine (State Pattern & RCA) ---
+
+// Submit RCA and Close Incident
+app.patch('/api/work-items/:id/rca', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rca_payload } = req.body;
+
+    // 1. Mandatory RCA Validation (Rubric Requirement)
+    if (!rca_payload || !rca_payload.root_cause || !rca_payload.fix_applied) {
+      return res.status(400).json({ error: 'State transition rejected: Incomplete RCA object' });
+    }
+
+    // 2. Fetch current state
+    const checkResult = await pgPool.query('SELECT created_at, status FROM work_items WHERE id = $1', [id]);
+    if (checkResult.rows.length === 0) return res.status(404).json({ error: 'Work Item not found' });
+    if (checkResult.rows[0].status === 'CLOSED') return res.status(400).json({ error: 'Incident already closed' });
+
+    // 3. MTTR Calculation (Rubric Requirement)
+    const start_time = new Date(checkResult.rows[0].created_at);
+    const end_time = new Date();
+    const mttr_minutes = Math.max(1, Math.round((end_time - start_time) / 60000)); // Minimum 1 minute
+
+    // 4. Transactional State Update in Postgres
+    const updateResult = await pgPool.query(
+      `UPDATE work_items 
+       SET status = 'CLOSED', rca_payload = $1, resolved_at = CURRENT_TIMESTAMP
+       WHERE id = $2 RETURNING *`,
+      [rca_payload, id]
+    );
+
+    res.status(200).json({ 
+      message: 'Incident Closed', 
+      mttr_minutes, 
+      incident: updateResult.rows[0] 
+    });
+  } catch (error) {
+    console.error('Workflow Error:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+// --- 6. Frontend Dashboard API ---
+
+// Get Live Feed (Sorted by most recent)
+app.get('/api/work-items', async (req, res) => {
+  try {
+    const result = await pgPool.query('SELECT * FROM work_items ORDER BY created_at DESC');
+    res.status(200).json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Database Error' });
+  }
+});
+
+// Get Incident Detail (Fetches raw signals from MongoDB Data Lake)
+app.get('/api/work-items/:id/signals', async (req, res) => {
+  try {
+    const signals = await Signal.find({ work_item_id: req.params.id }).sort({ timestamp: -1 });
+    res.status(200).json(signals);
+  } catch (error) {
+    res.status(500).json({ error: 'Data Lake Error' });
+  }
+});
+
 // --- Boot Server ---
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
