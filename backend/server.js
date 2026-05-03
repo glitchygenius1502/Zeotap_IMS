@@ -24,14 +24,15 @@ const withDBRetry = async (operation, retries = 3) => {
 };
 
 // --- 2. LLD: Alerting Strategy Pattern (Rubric Requirement) ---
+
 class AlertStrategy { send(component) { throw new Error("Method not implemented"); } }
-class P0AlertStrategy extends AlertStrategy { send(comp) { console.log(`🚨 [P0 ALERT] RDBMS Failure! Paging on-call instantly for ${comp}.`); } }
-class P2AlertStrategy extends AlertStrategy { send(comp) { console.log(`🔔 [P2 ALERT] Component degraded. Creating Jira ticket for ${comp}.`); } }
+class P0AlertStrategy extends AlertStrategy { send(comp) { console.log(`🚨 [P0 ALERT] RDBMS Failure!`); return 'P0'; } }
+class P2AlertStrategy extends AlertStrategy { send(comp) { console.log(`🔔 [P2 ALERT] Component degraded.`); return 'P2'; } }
 
 class AlertNotifier {
   static trigger(component_id) {
     const strategy = component_id.includes('RDBMS') ? new P0AlertStrategy() : new P2AlertStrategy();
-    strategy.send(component_id);
+    return strategy.send(component_id); // Returns the severity string!
   }
 }
 
@@ -85,6 +86,7 @@ const initDB = async () => {
     CREATE TABLE IF NOT EXISTS work_items (
       id SERIAL PRIMARY KEY,
       component_id VARCHAR(255) NOT NULL,
+      severity VARCHAR(10) DEFAULT 'P2', 
       status VARCHAR(50) DEFAULT 'OPEN',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
       resolved_at TIMESTAMP,
@@ -115,13 +117,13 @@ app.post('/api/signals', ingestionLimiter, async (req, res) => {
     let workItemId = await redisClient.get(redisKey);
 
     if (!workItemId) {
-      // Trigger Alert Strategy
-      AlertNotifier.trigger(component_id);
+      // Trigger Alert Strategy and capture severity
+      const severity = AlertNotifier.trigger(component_id);
 
-      // Create Work Item with Retry Logic
+      // Create Work Item with Severity
       const pgResult = await withDBRetry(() => pgPool.query(
-        `INSERT INTO work_items (component_id) VALUES ($1) RETURNING id`,
-        [component_id]
+        `INSERT INTO work_items (component_id, severity) VALUES ($1, $2) RETURNING id`,
+        [component_id, severity]
       ));
       workItemId = pgResult.rows[0].id;
       await redisClient.setEx(redisKey, 10, workItemId.toString());
@@ -197,6 +199,48 @@ app.get('/api/work-items/:id/signals', async (req, res) => {
     res.status(500).json({ error: 'Data Lake Error' });
   }
 });
+
+
+// Change Status (OPEN -> INVESTIGATING -> RESOLVED)
+app.patch('/api/work-items/:id/status', async (req, res) => {
+  try {
+    const { status } = req.body;
+    const validStates = ['OPEN', 'INVESTIGATING', 'RESOLVED'];
+    if (!validStates.includes(status)) return res.status(400).json({ error: 'Invalid state transition' });
+
+    const result = await withDBRetry(() => pgPool.query(
+      `UPDATE work_items SET status = $1 WHERE id = $2 RETURNING *`, [status, req.params.id]
+    ));
+    await redisClient.del('dashboard_feed'); // Invalidate cache
+    res.status(200).json(result.rows[0]);
+  } catch (error) {
+    res.status(500).json({ error: 'Database Error' });
+  }
+});
+
+// Timeseries Aggregation (Rubric Requirement for the Data Lake)
+app.get('/api/metrics/timeseries', async (req, res) => {
+  try {
+    // Groups signals by the minute they occurred
+    const timeseries = await Signal.aggregate([
+      {
+        $group: {
+          _id: { 
+            year: { $year: "$timestamp" }, month: { $month: "$timestamp" }, 
+            day: { $dayOfMonth: "$timestamp" }, hour: { $hour: "$timestamp" }, minute: { $minute: "$timestamp" } 
+          },
+          signal_count: { $sum: 1 }
+        }
+      },
+      { $sort: { "_id.year": -1, "_id.month": -1, "_id.day": -1, "_id.hour": -1, "_id.minute": -1 } },
+      { $limit: 60 } // Last 60 minutes
+    ]);
+    res.status(200).json(timeseries);
+  } catch (error) {
+    res.status(500).json({ error: 'Aggregation Error' });
+  }
+});
+
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, async () => {
