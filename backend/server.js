@@ -108,6 +108,7 @@ setInterval(() => {
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
 // Ingestion Pipeline
+// High-Throughput Ingestion Pipeline (With Distributed Concurrency Lock)
 app.post('/api/signals', ingestionLimiter, async (req, res) => {
   try {
     const { component_id, payload } = req.body;
@@ -116,27 +117,46 @@ app.post('/api/signals', ingestionLimiter, async (req, res) => {
     const redisKey = `incident:${component_id}`;
     let workItemId = await redisClient.get(redisKey);
 
+    // Concurrency Handling: The Race Condition Lock
     if (!workItemId) {
-      // Trigger Alert Strategy and capture severity
-      const severity = AlertNotifier.trigger(component_id);
+      const lockKey = `lock:${component_id}`;
+      // Attempt to acquire a 5-second lock. Only the FIRST request will get "true"
+      const lockAcquired = await redisClient.set(lockKey, 'locked', { NX: true, EX: 5 });
 
-      // Create Work Item with Severity
-      const pgResult = await withDBRetry(() => pgPool.query(
-        `INSERT INTO work_items (component_id, severity) VALUES ($1, $2) RETURNING id`,
-        [component_id, severity]
-      ));
-      workItemId = pgResult.rows[0].id;
-      await redisClient.setEx(redisKey, 10, workItemId.toString());
+      if (lockAcquired) {
+        // WE HAVE THE LOCK: We are the single request allowed to write to Postgres
+        const severity = AlertNotifier.trigger(component_id);
+
+        const pgResult = await withDBRetry(() => pgPool.query(
+          `INSERT INTO work_items (component_id, severity) VALUES ($1, $2) RETURNING id`,
+          [component_id, severity]
+        ));
+        
+        workItemId = pgResult.rows[0].id;
+        
+        // Save to cache for the 10-second debounce window
+        await redisClient.setEx(redisKey, 10, workItemId.toString());
+        await redisClient.del('dashboard_feed'); // Invalidate UI cache
+        
+      } else {
+        // WE DO NOT HAVE THE LOCK: Another signal is currently writing to Postgres.
+        // We will pause for 50ms intervals until the cache is populated.
+        let retries = 10;
+        while (!workItemId && retries > 0) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          workItemId = await redisClient.get(redisKey);
+          retries--;
+        }
+      }
     }
 
+    // All 50 signals now safely have the same workItemId and dump to the Data Lake
     Signal.create({ component_id, work_item_id: workItemId, payload: payload || req.body });
     signalsProcessed++;
-    
-    // Clear the dashboard cache so the UI sees the new incident instantly
-    await redisClient.del('dashboard_feed');
 
     res.status(202).json({ message: 'Signal Ingested', work_item_id: workItemId });
   } catch (error) {
+    console.error('Ingestion Error:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });

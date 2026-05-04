@@ -1,6 +1,10 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@theme {
+  --color-brand-dark: #0B0F19;
+  --color-brand-card: #111827;
+  --color-brand-accent: #3B82F6;
+}
 
 body {
   @apply bg-brand-dark text-slate-200 antialiased;
