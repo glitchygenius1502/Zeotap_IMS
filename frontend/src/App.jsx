@@ -10,7 +10,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   // RCA Form State
-  const [rcaForm, setRcaForm] = useState({ root_cause: 'Database Timeout', fix_applied: '', prevention: '' });
+  // const [rcaForm, setRcaForm] = useState({ root_cause: 'Database Timeout', fix_applied: '', prevention: '' });
+  const [rcaForm, setRcaForm] = useState({ start_time: '', end_time: '', root_cause: 'Database Timeout', fix_applied: '', prevention: '' });
 
   const loadIncidents = async () => {
     try {
@@ -201,7 +202,20 @@ export default function App() {
                     value={rcaForm.fix_applied} onChange={e => setRcaForm({...rcaForm, fix_applied: e.target.value})}
                   />
                 </div>
-
+                <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">Start Time</label>
+                  <input type="datetime-local" className="w-full bg-brand-dark border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-brand-accent outline-none" onChange={e => setRcaForm({...rcaForm, start_time: e.target.value})} required />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-300 mb-1">End Time</label>
+                  <input type="datetime-local" className="w-full bg-brand-dark border border-slate-700 rounded-lg p-2.5 text-slate-200 focus:border-brand-accent outline-none" onChange={e => setRcaForm({...rcaForm, end_time: e.target.value})} required />
+                </div>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-300 mb-1">Prevention Steps</label>
+                <textarea required className="w-full bg-brand-dark border border-slate-700 rounded-lg p-3 text-slate-200 h-20 focus:border-brand-accent outline-none" placeholder="How do we prevent this?" value={rcaForm.prevention} onChange={e => setRcaForm({...rcaForm, prevention: e.target.value})} />
+              </div>
                 <button type="submit" className="w-full bg-emerald-600 hover:bg-emerald-500 text-white font-semibold py-3 rounded-lg transition-colors flex justify-center items-center">
                   <CheckCircle className="w-5 h-5 mr-2" /> Submit RCA & Close Incident
                 </button>

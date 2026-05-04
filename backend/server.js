@@ -202,7 +202,8 @@ app.get('/api/work-items', async (req, res) => {
       return res.status(200).json(JSON.parse(cachedFeed)); // Served from memory
     }
 
-    const result = await withDBRetry(() => pgPool.query('SELECT * FROM work_items ORDER BY created_at DESC'));
+    // const result = await withDBRetry(() => pgPool.query('SELECT * FROM work_items ORDER BY created_at DESC'));
+    const result = await withDBRetry(() => pgPool.query('SELECT * FROM work_items ORDER BY severity ASC, created_at DESC'));
     await redisClient.setEx('dashboard_feed', 5, JSON.stringify(result.rows)); // Cache for 5s
     
     res.status(200).json(result.rows);
